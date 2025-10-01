@@ -522,10 +522,11 @@ def merge_markdown(pages: Sequence[PageTask], output_path: Path) -> List[PageTas
         if not page.md_path.exists():
             continue
         content = page.md_path.read_text(encoding="utf-8").strip()
-        blocks.append(f"# 第 {page.page_number} 页")
-        if content:
+        if not content:
+            continue
+        if blocks and blocks[-1] != "":
             blocks.append("")
-            blocks.append(content)
+        blocks.append(content)
         blocks.append("")
         available.append(page)
     if not available:
