@@ -248,7 +248,7 @@ def build_payload_variants(model: str, image_bytes: bytes, image_format: str) ->
                             "role": "user",
                             "content": [
                                 {"type": "input_image", "image_url": data_url},
-                                {"type": "input_text", "text": OCR_PROMPT},
+                                {"type": "text", "text": OCR_PROMPT},
                             ],
                         }
                     ]
@@ -301,7 +301,7 @@ def build_payload_variants(model: str, image_bytes: bytes, image_format: str) ->
                                 },
                             },
                             {
-                                "type": "input_text",
+                                "type": "text",
                                 "text": OCR_PROMPT,
                             },
                         ],
