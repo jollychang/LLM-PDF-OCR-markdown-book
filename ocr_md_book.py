@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """\
-用法示例：
+Usage example:
     python ocr_md_book.py \
         --images-dir ./book_images \
-        --title "我的扫描书" \
-        --author "未知作者"
+        --title "My Scanned Book" \
+        --author "Unknown"
 
-该工具会将扫描页图像 OCR 成 Markdown，并合并为电子书（EPUB，及可选的 AZW3/MOBI）。
+This tool OCRs scanned page images into Markdown, merges them, and exports EPUB (plus optional AZW3/MOBI).
 """
 from __future__ import annotations
 
@@ -42,25 +42,25 @@ from tqdm import tqdm
 OCR_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generate"
 COMPATIBLE_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 OCR_PROMPT = """\
-你是“图片转可读电子书”的排版专家。请将图片中的内容转写为 GitHub-Flavored Markdown (GFM)，严格遵循：
-1) 不要臆造任何不存在的内容；保证阅读顺序正确。
-2) 标题用 # / ## / ### 表示层级；勿把正文误判为标题。
-3) 强调用 **加粗** 与 *斜体* 表达。
-4) 列表使用 - 和 1. 2. 3.，子级每层缩进两个空格。
-5) 表格用标准 Markdown 表格语法（| th | th |）。
-6) 代码与公式保留为 ``` 代码块 或 `行内`，数学公式保留 $...$ / $$...$$。
-7) 去除页眉/页脚/页码/水印/扫描噪声。
-8) 段落之间空一行；不要用硬换行截断正常句子。
-9) 图片中的图题/脚注以 *斜体* 或普通段落保留。
-仅输出 Markdown 纯文本，不要返回 JSON 或解释。
+You are a typesetting expert converting page scans into readable ebooks. Transcribe the image into GitHub-Flavored Markdown (GFM) and follow these rules:
+1) Do not hallucinate content; keep the natural reading order.
+2) Use # / ## / ### for true headings only.
+3) Preserve emphasis with **bold** and *italic*.
+4) Format lists with - or numbered lists; indent two spaces per level.
+5) Render tables with standard Markdown table syntax (| th | th |).
+6) Keep code/formulas as ``` fenced ``` blocks or `inline`, and $...$ / $$...$$ for math.
+7) Remove headers, footers, page numbers, watermarks, and obvious scan noise.
+8) Leave a blank line between paragraphs; avoid forced line breaks in normal sentences.
+9) Keep figure captions or footnotes as plain text or *italic* lines.
+Return pure Markdown text only, with no explanations or JSON.
 """
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 HEADER_PATTERNS = [
-    re.compile(r"^第?\s*\d+\s*[页頁]$", re.IGNORECASE),
-    re.compile(r"^page\s*\d+$", re.IGNORECASE),
+    re.compile(r"^[Pp]age\s*\d+$"),
     re.compile(r"^\d{1,4}$"),
     re.compile(r"^(confidential|draft|company\s+name|proprietary).*$", re.IGNORECASE),
-    re.compile(r"^版权所有.*$"),
+    re.compile(r"^copyright\s+reserved.*$", re.IGNORECASE),
+    re.compile(r"^\u7b2c?\s*\d+\s*[\u9875\u9801]$"),
 ]
 RATE_LIMIT_RANGE = (0.05, 0.15)
 MAX_RETRIES = 5
@@ -146,19 +146,19 @@ def gather_images(images_dir: Path, from_list: Optional[Path]) -> List[Path]:
             if not candidate.is_absolute():
                 candidate = (base_dir / line).resolve()
             if not candidate.exists():
-                raise FileNotFoundError(f"列表中的文件不存在：{candidate}")
+                raise FileNotFoundError(f"File listed in manifest not found: {candidate}")
             if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
                 continue
             items.append(candidate)
         if not items:
-            raise ValueError("指定的列表中没有有效的图像文件")
+            raise ValueError("No valid image files found in the provided list")
         return items
 
     if not images_dir.exists():
-        raise FileNotFoundError(f"图像目录不存在：{images_dir}")
+        raise FileNotFoundError(f"Images directory does not exist: {images_dir}")
     items = [p for p in images_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS]
     if not items:
-        raise ValueError("图像目录中未找到 PNG/JPG 图片")
+        raise ValueError("No PNG/JPG images found in the directory")
     items.sort(key=natural_key)
     return items
 
@@ -402,7 +402,7 @@ def extract_text_from_response(data: dict) -> str:
             return text_output.strip()
     if "text" in data and isinstance(data["text"], str) and data["text"].strip():
         return data["text"].strip()
-    raise ValueError("未能从模型响应中解析文本内容")
+    raise ValueError("Could not extract text content from model response")
 
 
 async def call_ocr_with_retry(
@@ -423,7 +423,7 @@ async def call_ocr_with_retry(
                 data = response.json()
                 if isinstance(data, dict):
                     if data.get("code") and data.get("code") not in {"Success", "OK", 200}:
-                        raise RuntimeError(f"DashScope 返回错误：{data.get('code')} {data.get('message')}")
+                        raise RuntimeError(f"DashScope returned an error: {data.get('code')} {data.get('message')}")
                 text = extract_text_from_response(data)
                 await asyncio.sleep(random.uniform(*RATE_LIMIT_RANGE))
                 return text
@@ -433,14 +433,14 @@ async def call_ocr_with_retry(
                     last_error = exc
                     continue
                 if status >= 400 and status < 500 and status != 429:
-                    raise RuntimeError(f"请求失败（HTTP {status}）：{exc.response.text}") from exc
+                    raise RuntimeError(f"Request failed (HTTP {status}): {exc.response.text}") from exc
                 last_error = exc
             except (httpx.RequestError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
                 last_error = exc
         delay = BACKOFF_BASE * (2 ** (attempt - 1))
         delay += random.uniform(0, BACKOFF_JITTER)
         await asyncio.sleep(delay)
-    raise RuntimeError(f"多次尝试后仍无法完成 OCR：{last_error}")
+    raise RuntimeError(f"OCR failed after multiple attempts: {last_error}")
 
 
 def post_clean_markdown(text: str) -> str:
@@ -530,7 +530,7 @@ def merge_markdown(pages: Sequence[PageTask], output_path: Path) -> List[PageTas
         blocks.append("")
         available.append(page)
     if not available:
-        raise RuntimeError("没有可用的 Markdown 页，无法合并")
+        raise RuntimeError("No Markdown pages are available for merging")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     merged = "\n".join(blocks).strip() + "\n"
     output_path.write_text(merged, encoding="utf-8")
@@ -572,7 +572,7 @@ def convert_with_calibre(epub_path: Path, target_suffix: str) -> Path:
 def detect_pandoc() -> str:
     path = shutil.which("pandoc")
     if not path:
-        raise FileNotFoundError("未找到 pandoc，请先安装后再运行。")
+        raise FileNotFoundError("pandoc not found. Please install it before running this script.")
     return path
 
 
@@ -588,10 +588,10 @@ async def process_page(
     args: argparse.Namespace,
 ) -> PageResult:
     if args.dry_run:
-        logger.info("[DRY RUN] 第 %d 页：%s -> %s", page.page_number, page.image_path.name, page.md_path)
+        logger.info("[DRY RUN] Page %d: %s -> %s", page.page_number, page.image_path.name, page.md_path)
         return PageResult(page.page_number, "dry")
     if args.skip_ocr_existing and page.md_path.exists():
-        logger.debug("跳过已存在的 Markdown：第 %d 页", page.page_number)
+        logger.debug("Skipping existing Markdown for page %d", page.page_number)
         return PageResult(page.page_number, "skipped")
     async with semaphore:
         try:
@@ -601,7 +601,7 @@ async def process_page(
             await asyncio.to_thread(write_page_md, page.md_path, cleaned)
             return PageResult(page.page_number, "success")
         except Exception as exc:  # noqa: BLE001
-            logger.error("第 %d 页处理失败：%s", page.page_number, exc)
+            logger.error("Failed to process page %d: %s", page.page_number, exc)
             return PageResult(page.page_number, "failed", str(exc))
 
 
@@ -618,7 +618,7 @@ async def process_all_pages(
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
         tasks = [process_page(page, client, semaphore, api_key, args) for page in pages]
         results: List[PageResult] = []
-        with tqdm(total=len(tasks), desc="OCR 页") as progress:
+        with tqdm(total=len(tasks), desc="OCR pages") as progress:
             for coro in asyncio.as_completed(tasks):
                 result = await coro
                 results.append(result)
@@ -635,23 +635,23 @@ def plan_outputs(images: Sequence[Path], out_root: Path, out_name: str) -> List[
 
 
 def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="将扫描页 OCR 为 Markdown 并导出 EPUB/AZW3/MOBI。")
-    parser.add_argument("--images-dir", required=True, help="包含页图像的目录")
-    parser.add_argument("--title", default="未命名书籍", help="电子书标题")
-    parser.add_argument("--author", default="未知作者", help="作者")
-    parser.add_argument("--lang", default="zh-CN", help="语言代码（默认 zh-CN）")
-    parser.add_argument("--max-width", type=int, help="上传前的最大宽度（像素）")
-    parser.add_argument("--concurrency", type=int, default=4, help="异步并发数")
-    parser.add_argument("--model", default="qwen2.5-vl-7b-instruct", help="DashScope 模型名称")
-    parser.add_argument("--cover", help="用于 EPUB 元数据的封面图路径")
-    parser.add_argument("--out-name", default="book", help="输出文件前缀名")
-    parser.add_argument("--skip-ocr-existing", action="store_true", help="若页面 Markdown 已存在则跳过")
-    parser.add_argument("--to-azw3", dest="to_azw3", action="store_true", help="生成 AZW3（需 Calibre）")
-    parser.add_argument("--to-mobi", dest="to_mobi", action="store_true", help="生成 MOBI（需 Calibre）")
-    parser.add_argument("--from-list", help="按行指定图像路径列表")
-    parser.add_argument("--pages", help="页码筛选，例如 1-10,15,20-25")
-    parser.add_argument("--dry-run", action="store_true", help="仅列出将处理的页面，不执行 OCR")
-    parser.add_argument("--verbose", action="store_true", help="打印调试信息")
+    parser = argparse.ArgumentParser(description="OCR scanned pages to Markdown and export EPUB/AZW3/MOBI.")
+    parser.add_argument("--images-dir", required=True, help="Directory containing page images")
+    parser.add_argument("--title", default="Untitled Book", help="Book title")
+    parser.add_argument("--author", default="Unknown Author", help="Author name")
+    parser.add_argument("--lang", default="zh-CN", help="Language code (default zh-CN)")
+    parser.add_argument("--max-width", type=int, help="Maximum width before upload (pixels)")
+    parser.add_argument("--concurrency", type=int, default=4, help="Async concurrency for OCR requests")
+    parser.add_argument("--model", default="qwen2.5-vl-7b-instruct", help="DashScope model name")
+    parser.add_argument("--cover", help="Cover image path for EPUB metadata")
+    parser.add_argument("--out-name", default="book", help="Output filename prefix")
+    parser.add_argument("--skip-ocr-existing", action="store_true", help="Skip pages that already have Markdown")
+    parser.add_argument("--to-azw3", dest="to_azw3", action="store_true", help="Generate AZW3 (requires Calibre)")
+    parser.add_argument("--to-mobi", dest="to_mobi", action="store_true", help="Generate MOBI (requires Calibre)")
+    parser.add_argument("--from-list", help="Text file listing images in processing order")
+    parser.add_argument("--pages", help="Process specific page numbers, e.g., 1-10,15,20-25")
+    parser.add_argument("--dry-run", action="store_true", help="Only show planned pages without OCR")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     return parser.parse_args(argv)
 
 
@@ -682,11 +682,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         images = gather_images(images_dir, from_list_path)
         images = select_pages(images, args.pages)
     except Exception as exc:  # noqa: BLE001
-        logger.error("收集图像失败：%s", exc)
+        logger.error("Failed to gather images: %s", exc)
         return 2
 
     if not images:
-        logger.error("没有可处理的页面。")
+        logger.error("No pages to process.")
         return 2
 
     out_root = images_dir / "_out"
@@ -702,38 +702,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             break
     api_key = os.getenv("DASHSCOPE_API_KEY")
     if need_ocr and not api_key:
-        logger.error("未设置环境变量 DASHSCOPE_API_KEY。")
+        logger.error("Environment variable DASHSCOPE_API_KEY is not set.")
         return 2
 
     if args.dry_run:
         for task in tasks:
-            logger.info("DRY: 第 %d 页 -> %s", task.page_number, task.image_path)
+            logger.info("DRY: Page %d -> %s", task.page_number, task.image_path)
         return 0
 
     try:
         results = asyncio.run(process_all_pages(tasks, api_key or "", args))
     except Exception as exc:  # noqa: BLE001
-        logger.error("处理过程中出现严重错误：%s", exc)
+        logger.error("Fatal error while processing pages: %s", exc)
         return 2
 
     success_pages = [r for r in results if r.status == "success"]
     skipped_pages = [r for r in results if r.status == "skipped"]
     failed_pages = [r for r in results if r.status == "failed"]
 
-    logger.info("成功 %d 页，跳过 %d 页，失败 %d 页。", len(success_pages), len(skipped_pages), len(failed_pages))
+    logger.info("Completed %d pages, skipped %d, failed %d.", len(success_pages), len(skipped_pages), len(failed_pages))
     if failed_pages:
-        logger.warning("失败页码：%s", ", ".join(str(r.page_number) for r in failed_pages))
+        logger.warning("Pages that failed: %s", ", ".join(str(r.page_number) for r in failed_pages))
 
     available_md_tasks = [task for task in tasks if task.md_path.exists()]
     if not available_md_tasks:
-        logger.error("没有任何 Markdown 输出，终止。")
+        logger.error("No Markdown pages were produced; aborting.")
         return 2
 
     book_md_path = out_root / f"{args.out_name}.md"
     try:
         merge_markdown(tasks, book_md_path)
     except Exception as exc:  # noqa: BLE001
-        logger.error("合并 Markdown 失败：%s", exc)
+        logger.error("Failed to merge Markdown pages: %s", exc)
         return 2
 
     try:
@@ -746,29 +746,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         build_epub(pandoc_path, book_md_path, epub_path, args.title, args.author, args.lang, cover_path)
     except subprocess.CalledProcessError as exc:
-        logger.error("pandoc 构建 EPUB 失败：%s", exc)
+        logger.error("pandoc failed while building the EPUB: %s", exc)
         return 2
 
     calibre_path = detect_calibre()
     if args.to_azw3 or args.to_mobi:
         if not calibre_path:
-            logger.warning("未检测到 ebook-convert，跳过 AZW3/MOBI 输出。")
+            logger.warning("ebook-convert not found; skipping AZW3/MOBI outputs.")
         else:
             if args.to_azw3:
                 try:
                     convert_with_calibre(epub_path, ".azw3")
-                    logger.info("已生成 AZW3：%s", epub_path.with_suffix(".azw3"))
+                    logger.info("Created AZW3: %s", epub_path.with_suffix(".azw3"))
                 except subprocess.CalledProcessError as exc:
-                    logger.error("生成 AZW3 失败：%s", exc)
+                    logger.error("Failed to create AZW3: %s", exc)
             if args.to_mobi:
                 try:
                     convert_with_calibre(epub_path, ".mobi")
-                    logger.info("已生成 MOBI：%s", epub_path.with_suffix(".mobi"))
+                    logger.info("Created MOBI: %s", epub_path.with_suffix(".mobi"))
                 except subprocess.CalledProcessError as exc:
-                    logger.error("生成 MOBI 失败：%s", exc)
+                    logger.error("Failed to create MOBI: %s", exc)
 
-    logger.info("已生成 Markdown：%s", book_md_path)
-    logger.info("已生成 EPUB：%s", epub_path)
+    logger.info("Wrote merged Markdown to %s", book_md_path)
+    logger.info("Wrote EPUB to %s", epub_path)
 
     if failed_pages and not success_pages and not skipped_pages:
         return 2

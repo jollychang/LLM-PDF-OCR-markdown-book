@@ -1,4 +1,5 @@
 .DS_Store
 *.pdf
-book_images/
+book_images*/
 __pycache__/
+book_images*.zip
